@@ -722,6 +722,11 @@ public:
 
         auto joysticks = state.GetJoysticksByGUID(guid);
 
+        LOG_DEBUG(Input, "SDL analog device: guid={} port={} maptype={} api={} axis_x={} axis_y={} "
+                 "deadzone={}",
+              guid, port, maptype, controller ? "controller" : "joystick", axis_x, axis_y,
+              deadzone);
+
         return std::make_unique<SDLAnalog>(joysticks, axis_x, axis_y, deadzone, port, controller);
     }
 
@@ -983,158 +988,34 @@ public:
     Common::ParamPackage GetNextInput() override {
         SDL_Event event;
         while (state.event_queue.Pop(event)) {
-            auto axis = event.jaxis.axis;
-            auto id = event.jaxis.which;
-            auto value = event.jaxis.value;
-            auto timestamp = event.jaxis.timestamp;
-            bool controller = false;
             switch (event.type) {
-            case SDL_CONTROLLERAXISMOTION: {
-                axis = event.caxis.axis;
-                value = event.caxis.value;
-                timestamp = event.caxis.timestamp;
-                value = event.caxis.value;
-                axis_center_value[id][axis] = 0;
-                controller = true;
-                [[fallthrough]];
-            }
+            case SDL_CONTROLLERAXISMOTION:
             case SDL_JOYAXISMOTION: {
-                // if a button has been pressed down within 50ms of this axis movement,
-                // assume they are actually the same thing and skip this axis
-                if (buttonDownTimestamp &&
-                    ((timestamp >= buttonDownTimestamp && timestamp - buttonDownTimestamp <= 50) ||
-                     (timestamp < buttonDownTimestamp && buttonDownTimestamp - timestamp <= 50))) {
-                    axis_skip[id][axis] = true;
-                    break;
+                const auto value = event.type == SDL_JOYAXISMOTION ? event.jaxis.value
+                                                                     : event.caxis.value;
+                if (std::abs(value / 32767.0) < 0.5) {
+                    continue;
                 }
-
-                // skipping this axis
-                if (axis_skip[id][axis])
-                    break;
-                if (!axis_memory.count(id) || !axis_memory[id].count(axis)) {
-                    // starting a new movement.
-                    axisStartTimestamps[id][axis] = event.jaxis.timestamp;
-                    axis_event_count[id][axis] = 1;
-                    if (axis_center_value.contains(id) && axis_center_value[id].contains(axis) &&
-                        IsAxisAtExtreme(value)) {
-                        // a single event with a value at the extreme after we
-                        // have established the center value. Must be a digital axis press.
-                        event.caxis.value = std::copysign(32767, value);
-                        return SDLEventToButtonParamPackage(state, event, true);
-                    }
-                    // otherwise, this is our first event ever on this axis,
-                    // so assume we are near the center
-                    if (value < -28000)
-                        axis_center_value[id][axis] = -32768;
-                    else if (value > 28000)
-                        axis_center_value[id][axis] = 32767;
-                    else
-                        axis_center_value[id][axis] = 0;
-
-                    axis_memory[id][axis] = axis_center_value[id][axis];
-                    break;
-                } else {
-                    axis_event_count[id][axis]++;
-                    if (axis_event_count[id][axis] == 2 && IsAxisAtPole(value) &&
-                        IsAxisAtPole(axis_memory[id][axis])) {
-                        // if there are two events and both are at poles, the only reasonable
-                        // way that happens is if this is the second half of a digital axis release.
-                        // So treat this as a release and make sure this is recorded as the center
-                        axis_event_count[id][axis] = 0;
-                        if (!IsAxisAtCenter(value, id, axis)) {
-                            // fix the center value
-                            if (value > 28000)
-                                axis_center_value[id][axis] = 32767;
-                            else if (value < -28000)
-                                axis_center_value[id][axis] = -32768;
-                            else
-                                axis_center_value[id][axis] = 0;
-                        }
-                        return SDLEventToButtonParamPackage(state, event, false);
-                    }
-                    if (IsAxisAtCenter(value, id, axis) &&
-                        IsAxisPastThreshold(axis_memory[id][axis], id, axis)) {
-                        // returned to center, send the up signal
-                        if (controller) {
-                            event.caxis.value = static_cast<Sint16>(std::copysign(
-                                32767, axis_memory[id][axis] - axis_center_value[id][axis]));
-                        } else {
-                            event.jaxis.value = static_cast<Sint16>(std::copysign(
-                                32767, axis_memory[id][axis] - axis_center_value[id][axis]));
-                        }
-                        axis_memory[id][axis] = axis_center_value[id][axis];
-                        axis_event_count[id][axis] = 0;
-                        return SDLEventToButtonParamPackage(state, event, false);
-                    } else if (IsAxisAtCenter(axis_memory[id][axis], id, axis) &&
-                               IsAxisPastThreshold(event.jaxis.value, id, axis)) {
-                        if (controller) {
-                            event.caxis.value = static_cast<Sint16>(
-                                std::copysign(32767, value - axis_center_value[id][axis]));
-                            axis_memory[id][axis] = event.caxis.value;
-                        } else {
-                            event.jaxis.value = static_cast<Sint16>(
-                                std::copysign(32767, value - axis_center_value[id][axis]));
-                            axis_memory[id][axis] = event.jaxis.value;
-                        }
-                        return SDLEventToButtonParamPackage(state, event, true);
-                    }
+                return SDLEventToButtonParamPackage(state, event, false);
+            }
+            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_JOYBUTTONDOWN:
+                return SDLEventToButtonParamPackage(state, event, false);
+            case SDL_JOYHATMOTION:
+                if (event.jhat.value != SDL_HAT_CENTERED) {
+                    return SDLEventToButtonParamPackage(state, event, true);
                 }
-                break;
-            }
-            case SDL_CONTROLLERBUTTONDOWN: {
-                buttonDownTimestamp = event.cbutton.timestamp;
-                return SDLEventToButtonParamPackage(state, event, true);
-            }
-            case SDL_JOYBUTTONDOWN: {
-                buttonDownTimestamp = event.jbutton.timestamp;
-                return SDLEventToButtonParamPackage(state, event, true);
-                break;
-            }
-            case SDL_CONTROLLERBUTTONUP: {
-                return SDLEventToButtonParamPackage(state, event, false);
-                break;
-            }
-            case SDL_JOYBUTTONUP: {
-                return SDLEventToButtonParamPackage(state, event, false);
-                break;
-            }
-            case SDL_JOYHATMOTION: {
-                return SDLEventToButtonParamPackage(state, event,
-                                                    event.jhat.value != SDL_HAT_CENTERED);
-                break;
-            }
+                continue;
+            case SDL_CONTROLLERBUTTONUP:
+            case SDL_JOYBUTTONUP:
+            case SDL_JOYDEVICEADDED:
+            case SDL_JOYDEVICEREMOVED:
+            default:
+                continue;
             }
         }
         return {};
     }
-
-private:
-    bool IsAxisAtCenter(int16_t value, SDL_JoystickID id, uint8_t axis) {
-        return axis_center_value[id].contains(axis) &&
-               std::abs(value - axis_center_value[id][axis]) < 367;
-    }
-
-    bool IsAxisPastThreshold(int16_t value, SDL_JoystickID id, uint8_t axis) {
-        return std::abs(value - axis_center_value[id][axis]) > 32767 / 2;
-    }
-
-    bool IsAxisAtExtreme(int16_t value) {
-        return std::abs(value) > 32300;
-    }
-
-    bool IsAxisAtPole(int16_t value) {
-        return IsAxisAtExtreme(value) || std::abs(value) < 367;
-    }
-
-    /** Holds the first received value for the axis. Used to
-     *  identify situations where "released" is -32768 (some triggers)
-     */
-    std::unordered_map<SDL_JoystickID, std::unordered_map<uint8_t, int16_t>> axis_center_value;
-    std::unordered_map<SDL_JoystickID, std::unordered_map<uint8_t, int16_t>> axis_memory;
-    std::unordered_map<SDL_JoystickID, std::unordered_map<uint8_t, uint32_t>> axis_event_count;
-    std::unordered_map<SDL_JoystickID, std::unordered_map<uint8_t, bool>> axis_skip;
-    int buttonDownTimestamp = 0;
-    std::unordered_map<SDL_JoystickID, std::unordered_map<uint8_t, int>> axisStartTimestamps;
 };
 
 class SDLAnalogPoller final : public SDLPoller {
@@ -1159,12 +1040,15 @@ public:
             }
             which = event.type == SDL_JOYAXISMOTION ? event.jaxis.which : event.caxis.which;
             auto value = event.type == SDL_JOYAXISMOTION ? event.jaxis.value : event.caxis.value;
+            const int axis = event.type == SDL_JOYAXISMOTION ? event.jaxis.axis : event.caxis.axis;
+            LOG_DEBUG(Input, "SDL analog poll event: type={}, api={}, which={}, axis={}, value={}",
+                      event.type, event.type == SDL_JOYAXISMOTION ? "joystick" : "controller",
+                      which, axis, value);
 
             if (std::abs(value / 32767.0) < 0.5)
                 continue;
             // An analog device needs two axes, so we need to store the axis for later and wait
             // for a second SDL event. The axes also must be from the same joystick.
-            int axis = event.type == SDL_JOYAXISMOTION ? event.jaxis.axis : event.caxis.axis;
 
             if (analog_xaxis == -1) {
                 analog_xaxis = axis;
@@ -1189,6 +1073,9 @@ public:
                 params.Set("name_x", axis_names.at(analog_xaxis));
                 params.Set("name_y", axis_names.at(analog_yaxis));
             }
+            LOG_DEBUG(Input, "SDL analog binding: guid={} port={} api={} axis_x={} axis_y={}",
+                      params.Get("guid", ""), params.Get("port", -1), params.Get("api", ""),
+                      params.Get("axis_x", -1), params.Get("axis_y", -1));
             analog_xaxis = -1;
             analog_yaxis = -1;
             analog_axes_joystick = -1;

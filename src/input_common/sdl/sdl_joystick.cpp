@@ -3,6 +3,7 @@
 // Refer to the misc/licenses/gplv2.txt file included.
 
 #include <SDL.h>
+#include "common/logging/log.h"
 #include "sdl_joystick.h"
 
 namespace InputCommon::SDL {
@@ -70,14 +71,22 @@ bool SDLJoystick::GetButton(int button, bool isController) const {
 float SDLJoystick::GetAxis(int axis, bool isController) const {
     if (!sdl_joystick)
         return 0.0;
-    if (isController)
-        return SDL_GameControllerGetAxis(sdl_controller.get(),
-                                         static_cast<SDL_GameControllerAxis>(axis)) /
-               32767.0f;
+    if (isController) {
+        const auto raw = SDL_GameControllerGetAxis(
+            sdl_controller.get(), static_cast<SDL_GameControllerAxis>(axis));
+        const auto normalized = raw / 32767.0f;
+        LOG_DEBUG(Input, "SDL analog read: api=controller guid={} axis={} raw={} normalized={}",
+                  guid, axis, raw, normalized);
+        return normalized;
+    }
     const int16_t center = joystick_axis_centers.count(axis) ? joystick_axis_centers.at(axis) : 0;
-    const auto delta = SDL_JoystickGetAxis(sdl_joystick.get(), axis) - center;
+    const auto raw = SDL_JoystickGetAxis(sdl_joystick.get(), axis);
+    const auto delta = raw - center;
     const float range = delta >= 0 ? (32767.0f - center) : (center - (-32768.0f));
-    return range > 0.0f ? delta / range : 0.0f;
+    const auto normalized = range > 0.0f ? delta / range : 0.0f;
+    LOG_DEBUG(Input, "SDL analog read: api=joystick guid={} axis={} raw={} center={} normalized={}",
+              guid, axis, raw, center, normalized);
+    return normalized;
 }
 
 std::tuple<float, float> SDLJoystick::GetAnalog(int axis_x, int axis_y, bool isController) const {
@@ -93,6 +102,9 @@ std::tuple<float, float> SDLJoystick::GetAnalog(int axis_x, int axis_y, bool isC
         x /= r;
         y /= r;
     }
+
+    LOG_DEBUG(Input, "SDL analog pair: guid={} api={} axis_x={} axis_y={} x={} y={}", guid,
+              isController ? "controller" : "joystick", axis_x, axis_y, x, y);
 
     return std::make_tuple(x, y);
 }

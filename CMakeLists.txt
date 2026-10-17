@@ -157,6 +157,8 @@ option(ENABLE_SSE42 "Enable SSE4.2 optimizations on x86_64" ON)
 
 option(ENABLE_DEVELOPER_OPTIONS "Enable functionality targeted at emulator developers" OFF)
 
+option(ENABLE_DUALSENSE_SDL_PROBE "Build the SDL DualSense diagnostic probe" OFF)
+
 option(ENABLE_BUILTIN_KEYBLOB "Enable the inclusion of the default crypto keys blob" ON)
 
 # Compile options
@@ -614,6 +616,11 @@ if (USE_SYSTEM_FAAD)
 endif()
 
 add_subdirectory(src)
+
+if (ENABLE_DUALSENSE_SDL_PROBE AND ENABLE_SDL2)
+    add_executable(dualsense_sdl_probe tools/dualsense_sdl_probe.cpp)
+    target_link_libraries(dualsense_sdl_probe PRIVATE SDL2::SDL2)
+endif()
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT citra_meta)
 
